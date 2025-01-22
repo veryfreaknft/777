@@ -1,0 +1,8 @@
+node_modules/
+dist/
+package-lock.json
+proxy_list.txt
+account_list.txt
+error.log
+combined.log
+database.sqlite

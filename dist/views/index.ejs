@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitch Viewer Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .viewer-box {
+            width: 20px;
+            height: 20px;
+            margin: 2px;
+            display: inline-block;
+            border: 1px solid #ccc;
+            cursor: pointer;
+        }
+        .status-starting { background-color: grey; }
+        .status-initialized { background-color: yellow; }
+        .status-watching { background-color: #44d209; }
+        .status-error { background-color: red; }
+        .status-stopped { background-color: #ccc; }
+        .status-login_pending { background-color: #ff9800; }
+        .status-login_failed { background-color: #f44336; }
+        .status-chat_enabled { background-color: #2196f3; }
+        
+        #screenshots-modal .modal-body {
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        
+        .screenshot-container {
+            margin-bottom: 15px;
+        }
+
+        .chat-container {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <h1>Twitch Viewer Manager</h1>
+        
+        <!-- Navigation -->
+        <ul class="nav nav-tabs mb-4">
+            <li class="nav-item">
+                <a class="nav-link active" href="/">Dashboard</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="/accounts">Account Manager</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="/chat">Chat Manager</a>
+            </li>
+        </ul>
+        
+        <!-- Stats Row -->
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">Viewer Statistics</div>
+                    <div class="card-body">
+                        <p>Total Viewers: <span id="totalViewers"><%= stats.totalViewers %></span></p>
+                        <p>Active Viewers: <span id="activeViewers"><%= stats.activeViewers %></span></p>
+                        <p>Watching Viewers: <span id="watchingViewers"><%= stats.watchingViewers %></span></p>
+                        <p>Logged In Viewers: <span id="loggedInViewers"><%= stats.loggedInViewers || 0 %></span></p>
+                        <p>Chat Enabled: <span id="chatEnabledViewers"><%= stats.chatEnabledViewers || 0 %></span></p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">Proxy Statistics</div>
+                    <div class="card-body">
+                        <p>Total Proxies: <span id="totalProxies"><%= proxyStats.total %></span></p>
+                        <p>Available Proxies: <span id="availableProxies"><%= proxyStats.available %></span></p>
+                        <p>In Use: <span id="proxiesInUse"><%= proxyStats.inUse %></span></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Control Panel -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">Control Panel</div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="targetUrl" class="form-label">Target URL</label>
+                            <input type="text" class="form-control" id="targetUrl" placeholder="https://www.twitch.tv/channel">
+                        </div>
+                        <div class="mb-3">
+                            <label for="accountSelect" class="form-label">Twitch Account (Optional)</label>
+                            <select class="form-select" id="accountSelect">
+                                <option value="">No Account (View Only)</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" id="createViewer">Create Viewer</button>
+                        <button class="btn btn-danger" id="stopAll">Stop All</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Viewers Grid -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">Viewers</div>
+                    <div class="card-body" id="viewersGrid"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Viewer Details Modal -->
+    <div class="modal fade" id="screenshots-modal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Viewer Details</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="screenshot-container" class="text-center">
+                        <img id="current-screenshot" class="img-fluid mb-3" />
+                        <div class="mt-3">
+                            <button class="btn btn-danger" id="modal-stop-viewer">Stop Viewer</button>
+                            <button class="btn btn-primary" id="modal-refresh-screenshot">Refresh Screenshot</button>
+                            <button class="btn btn-success" id="modal-follow-channel" style="display: none;">Follow Channel</button>
+                        </div>
+                    </div>
+                    <div id="chat-container" class="mt-4" style="display: none;">
+                        <div class="chat-container" id="chat-messages"></div>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="chat-input" placeholder="Type a message...">
+                            <button class="btn btn-primary" id="send-chat">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const viewersGrid = document.getElementById('viewersGrid');
+        const screenshotsModal = new bootstrap.Modal(document.getElementById('screenshots-modal'));
+        let currentViewerId = null;
+        let viewers = new Map();
+
+        // Load accounts on startup
+        socket.emit('getAccounts');
+
+        socket.on('accounts', (accounts) => {
+            const select = document.getElementById('accountSelect');
+            accounts.forEach(account => {
+                if (account.status === 'active' && !account.isLoggedIn) {
+                    const option = document.createElement('option');
+                    option.value = account.id;
+                    option.textContent = account.username;
+                    select.appendChild(option);
+                }
+            });
+        });
+
+        // Update stats
+        socket.on('stats', (data) => {
+            document.getElementById('totalViewers').textContent = data.totalViewers;
+            document.getElementById('activeViewers').textContent = data.activeViewers;
+            document.getElementById('watchingViewers').textContent = data.watchingViewers;
+            document.getElementById('loggedInViewers').textContent = data.loggedInViewers || 0;
+            document.getElementById('chatEnabledViewers').textContent = data.chatEnabledViewers || 0;
+            document.getElementById('totalProxies').textContent = data.total;
+            document.getElementById('availableProxies').textContent = data.available;
+            document.getElementById('proxiesInUse').textContent = data.inUse;
+        });
+
+        // Handle viewer creation
+        document.getElementById('createViewer').addEventListener('click', () => {
+            const targetUrl = document.getElementById('targetUrl').value;
+            const accountId = document.getElementById('accountSelect').value;
+            if (targetUrl) {
+                socket.emit('createViewer', { 
+                    targetUrl,
+                    accountId: accountId ? parseInt(accountId) : undefined
+                });
+            }
+        });
+
+        // Handle viewer updates
+        socket.on('viewerCreated', (data) => {
+            if (!document.getElementById(`viewer-${data.id}`)) {
+                const viewerBox = document.createElement('div');
+                viewerBox.id = `viewer-${data.id}`;
+                viewerBox.className = `viewer-box status-${data.status}`;
+                viewerBox.title = `Viewer ${data.id}`;
+                viewerBox.onclick = () => showViewerDetails(data.id);
+                viewersGrid.appendChild(viewerBox);
+                viewers.set(data.id, data);
+            }
+        });
+
+        socket.on('viewerUpdated', (data) => {
+            const viewerBox = document.getElementById(`viewer-${data.id}`);
+            if (viewerBox) {
+                viewerBox.className = `viewer-box status-${data.status}`;
+                viewers.set(data.id, { ...viewers.get(data.id), ...data });
+                updateModalControls(data.id);
+            }
+        });
+
+        socket.on('viewerStopped', (data) => {
+            const viewerBox = document.getElementById(`viewer-${data.id}`);
+            if (viewerBox) {
+                viewerBox.remove();
+                viewers.delete(data.id);
+            }
+            if (currentViewerId === data.id) {
+                screenshotsModal.hide();
+            }
+        });
+
+        function showViewerDetails(id) {
+            currentViewerId = id;
+            const viewer = viewers.get(id);
+            
+            document.getElementById('modal-stop-viewer').onclick = () => stopViewer(id);
+            document.getElementById('modal-refresh-screenshot').onclick = () => requestScreenshot(id);
+            document.getElementById('modal-follow-channel').onclick = () => followChannel(id);
+            
+            updateModalControls(id);
+            requestScreenshot(id);
+            screenshotsModal.show();
+        }
+
+        function updateModalControls(id) {
+            const viewer = viewers.get(id);
+            const chatContainer = document.getElementById('chat-container');
+            const followButton = document.getElementById('modal-follow-channel');
+            
+            if (viewer && viewer.status === 'chat_enabled') {
+                chatContainer.style.display = 'block';
+                document.getElementById('send-chat').onclick = () => sendChatMessage(id);
+            } else {
+                chatContainer.style.display = 'none';
+            }
+
+            if (viewer && viewer.account && !viewer.isFollowing) {
+                followButton.style.display = 'inline-block';
+            } else {
+                followButton.style.display = 'none';
+            }
+        }
+
+        // Handle screenshots
+        function requestScreenshot(id) {
+            socket.emit('requestScreenshot', { id });
+        }
+
+        socket.on('screenshot', (data) => {
+            if (currentViewerId === data.id) {
+                document.getElementById('current-screenshot').src = `data:image/png;base64,${data.image}`;
+            }
+        });
+
+        // Chat functionality
+        function sendChatMessage(id) {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            if (message) {
+                socket.emit('sendChatMessage', { id, message });
+                input.value = '';
+            }
+        }
+
+        socket.on('chatMessageResult', (data) => {
+            const chatMessages = document.getElementById('chat-messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = data.success ? 'text-success' : 'text-danger';
+            messageDiv.textContent = data.message;
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        });
+
+        // Follow functionality
+        function followChannel(id) {
+            socket.emit('followChannel', { id });
+        }
+
+        socket.on('followResult', (data) => {
+            if (data.success) {
+                const viewer = viewers.get(data.id);
+                if (viewer) {
+                    viewer.isFollowing = true;
+                    updateModalControls(data.id);
+                }
+            }
+            alert(data.message);
+        });
+
+        // Stop viewer
+        function stopViewer(id) {
+            socket.emit('stopViewer', { id });
+        }
+
+        // Stop all viewers
+        document.getElementById('stopAll').addEventListener('click', () => {
+            const viewers = viewersGrid.getElementsByClassName('viewer-box');
+            Array.from(viewers).forEach(viewer => {
+                const id = parseInt(viewer.id.split('-')[1]);
+                stopViewer(id);
+            });
+        });
+
+        // Handle chat input enter key
+        document.getElementById('chat-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && currentViewerId) {
+                sendChatMessage(currentViewerId);
+            }
+        });
+    </script>
+</body>
+</html> 
